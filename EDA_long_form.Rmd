@@ -1,0 +1,529 @@
+---
+title: "EDA Long Form"
+author: "John Lee"
+date: "December 9, 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+My data source is the General Social Survey (GSS), which is run by the National Opinion Research Center (NORC) at the University of Chicago. The GSS is one of the best known sources of nationally representative public opinion survey data in the U.S., with data that dates back to the 1970s. The GSS uses a stratified probability-based sampling method and asks a large number of questions related to social, cultural, political, and economic issues. The survey is conducted once every two years. Since 2006, the GSS has been running a series of three-wave panels. I am using the first set of panel data, which surveyed the same subjects in 2006, 2008, and 2010.
+
+**My research questions are the following:** 
+1. What predicts changes in political ideology (political conservatism) over time?
+2. What predicts changes in party ID (Republican party ID) over time?
+3. How does gender shape the effects of the factors?
+
+Here is a link to the dataset: https://gssdataexplorer.norc.org/
+
+The citation for the data source is the following: 
+
+Smith, Tom W, Michael Davern, Jeremy Freese, and Michael Hout. General Social Surveys, 1972-2016 [machine-readable data file] /Principal Investigator, Tom W. Smith; Co-Principal Investigator, Michael Davern; Co-Principal Investigator, Jeremy Freese; Co-Principal Investigator, Michael Hout; Sponsored by National Science Foundation. --NORC ed.-- Chicago: NORC at the University of Chiago [producer]; Storrs, CT: The Roper Center for Public Opinion Research, University of Connecticut [distributor], 2018.
+
+<br>
+
+#### Load Packages
+
+```{r, message=FALSE}
+# Loading package(s)
+library(tidyverse)
+library(forcats)
+library(modelr)
+library(haven)
+library(plm)
+```
+<br>
+
+## Part 1: Exploring Variable Distributions  
+
+In this first section, I explore the distributions of the continuous variables in my dataset using faceted histograms: age, years of education, logged family income, conservative ideology, and Republican party ID. The data from each wave are shown separately for each variable: Wave 1 in red, Wave 2 in green, and Wave 3 in blue. I want to make sure that none of the variables have a serious skew; if so, I would consider logging the variables before proceeding to the modeling stage. Family income is already logged (natural log). 
+
+By looking at the distributions below, we can see that most variables either have a normal (or quasi-normal) distribution; unsurprisingly, the distributions look similar across the waves. The most interesting finding is that while the scale for conservative ideology is normally distributed (i.e., with the most common value being a 4, for "Moderate"), the most common values for the Republican party ID scale are 1 and 2, which stand for "Strong Democrat" and "Not Strong Democrat," respectively. This may suggest that ideology does not cleanly map onto party ID, as many people who self-identify as ideological moderates seem to prefer the Democratic Party (see Figures 4 and 5). I'll return to this topic again soon. 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Import the cleaned dataset
+complete_gss_df <- readRDS("data/processed/complete_gss.rds")
+
+# Create subsets of the data - one for men, one for women. This will be used during the modeling process
+only_men <- complete_gss_df %>%
+  filter(sex == 1)
+
+only_women <- complete_gss_df %>%
+  filter(sex == 2)
+
+# Code to center the plot title as the default option
+theme_update(plot.title = element_text(hjust = 0.5))
+
+# Check the dist of age
+complete_gss_df %>% 
+  ggplot(aes(x = age, y = ..density.., fill = wave_fct)) +
+  geom_histogram() + 
+  facet_wrap(~wave_fct) +
+  ggtitle("Figure 1: Distribution of Age") +
+  labs(x = "Age", y = "Density", fill = "Wave #")
+
+# Check the dist of educ
+complete_gss_df %>% 
+  ggplot(aes(x = educ, y = ..density.., fill = wave_fct)) +
+  geom_histogram() + 
+  facet_wrap(~wave_fct) +
+  ggtitle("Figure 2: Distribution of Years of Education") +
+  labs(x = "Years of Education", y = "Density", fill = "Wave #")
+
+# Check the dist of ln(family income)
+complete_gss_df %>% 
+  ggplot(aes(x = ln_famincome, y = ..density.., fill = wave_fct)) +
+  geom_histogram() + 
+  facet_wrap(~wave_fct) +
+  ggtitle("Figure 3: Distribution of Ln(Family Income)") +
+  labs(x = "Ln(Family Income)", y = "Density", fill = "Wave #")
+
+# Check the dist of conserv_ideology
+complete_gss_df %>% 
+  ggplot(aes(x = conserv_ideol, y = ..density.., fill = wave_fct)) +
+  geom_histogram() + 
+  facet_wrap(~wave_fct) +
+  ggtitle("Figure 4: Distribution of Conservative Ideology") +
+  labs(x = "Conservative Ideology", y = "Density", fill = "Wave #")
+
+# Check the dist of repub_partyid
+complete_gss_df %>% 
+  ggplot(aes(x = repub_partyid, y = ..density.., fill = wave_fct)) +
+  geom_histogram() + 
+  facet_wrap(~wave_fct) +
+  ggtitle("Figure 5: Distribution of Repub. Party ID") +
+  labs(x = "Republican Party ID", y = "Density", fill = "Wave #")
+
+```
+
+<br><br>
+
+## Part 2: Exploring Bivariate Relationships 
+
+In Part 2, I explore bivariate relationships. At this point, I want to clarify that I'll only focus on bivariate relationships between time-variant predictors (i.e., variables that may change over time) and my two dependent variables. I do this because in the modeling stage of the EDA, I plan to run linear fixed effects (FE) models, not OLS models. One common threat to causal inference in the analysis of survey data is the presence of unobserved heterogeneity (e.g., omitted variables, reverse causation). However, given the panel structure of my data, I can use FE models that only use within-unit variance over time to compute model parameters -- which provide a stronger basis for causal inference. One downside to this is that FE models automatically drop variables that don't change over time (e.g., race). This is why in this section, I'll only focus on examining the bivariate relationship between time-variant predictors (e.g., years of education, religiosity, marital status) and the two DVs of interest: conservative ideology and Republican party ID. 
+
+First, I look at the potential effects of two personal characteristics: religiosity and and marital status. The intuition here is that individuals who go through a divorce may adopt more liberal, progressive attitudes; also, it's possible that becoming less religious may also be associated with a move towards more liberal beliefs (e.g., on social/cultural issues). I use boxplots because I am displaying the link between a categorical variable (e.g., marital status) and a continuous variable (e.g., political conservatism scale). The plots are also faceted by gender, because that is one of my key research questions: i.e., whether the link between the predictors and the two DVs is shaped in some way by gender. 
+
+Please note that in general, we want to display the DV on the Y axis. However, I had to use `coord_flip()` for the four plots (Figures 6a - 7b) below because the text for religiosity and marital status did not fit on the x-axis. For religiosity, we can observe what we may have expected: indeed, religiosity appears to have a positive association with both political conservatism and a stronger tie to the Republican party (Figures 6a, 6b). 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Plot 6a: rel. between religiosity and conservative ideology
+complete_gss_df %>%
+  ggplot(aes(x = religiosity_text, y = conserv_ideol, color = gender_text)) + 
+  geom_boxplot() +
+  coord_flip() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 6a: Religiosity and Conservative Ideology") +
+  labs(x = "Religiosity", y = "Conservative Ideology", color = "Gender")
+
+# Plot 6b: rel. between religiosity and party ID
+complete_gss_df %>%
+  ggplot(aes(x = religiosity_text, y = repub_partyid, color = gender_text)) + 
+  geom_boxplot() +
+  coord_flip() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 6b: Religiosity and Republican Party ID") +
+  labs(x = "Religiosity", y = "Republican Party ID", color = "Gender")
+```
+
+<br>
+
+However, the link between marital status and the DVs appears to be shaped by gender. For men, across all categories of marital status, the mean score is a 4/7 for the Republican party ID scale; however, men who have never been married are much less likely to be Republican identifiers (Figure 7b). This is likely because marital status is somewhat correlated with age, and men who've never been married are also more likely to be in their 20s and early 30s. Women are less likely to be Republican than men across the board, with one exception: for some reason, women who are married have a mean score of 4/7 on the Republican party ID scale (Figure 7b). 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Plot 7a: rel. between marital status and conservative ideology
+complete_gss_df %>%
+  ggplot(aes(x = marital_text, y = conserv_ideol, color = gender_text)) + 
+  geom_boxplot() +
+  coord_flip() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 7a: Marital Status and Conservative Ideology") +
+  labs(x = "Marital Status", y = "Conservative Ideology", color = "Gender")
+
+# Plot 7b: rel. between marital status and Republican party ID
+complete_gss_df %>%
+  ggplot(aes(x = marital_text, y = repub_partyid, color = gender_text)) + 
+  geom_boxplot() +
+  coord_flip() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 7b: Marital Status and Republican Party ID") +
+  labs(x = "Marital Status", y = "Republican Party ID", color = "Gender")
+```
+
+<br>
+
+Next, I explore the potential effects of various dimensions or indicators of socioeconomic status: education, family income, and subjective class identity. It seems as though educational attainment is negatively associated with political conservatism and Republican Party ID, although the effect of education appears to be more steep among women (Figure 8a). It's worth noting, of course, that there is a great deal of heterogeneity here: i.e., although those with more education are generally more liberal/Democratic Party-leaning, Figures 8a and 8b clearly show that there are many highly educated individuals who are ideologically conservative and/or strong Republican identifiers as well. Among women, eduational attainment seems to be negatively associated with support for Republicans; among men, the link seems less clear (Figure 8b). 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Plot 8a: rel. between education and conservative ideology
+complete_gss_df %>%
+  ggplot(aes(x = educ, y = conserv_ideol, color = gender_text)) + 
+  geom_jitter(alpha = .4) +
+  geom_smooth(color = "black") +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 8a: Education and Conservative Ideology") +
+  labs(x = "Years of Education", y = "Conservative Ideology", color = "Gender")
+
+# Plot 8b: rel. between education and republican party ID
+complete_gss_df %>%
+  ggplot(aes(x = educ, y = repub_partyid, color = gender_text)) + 
+  geom_jitter(alpha = .4) +
+  geom_smooth(color = "black") +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 8b: Education and Republican Party ID") +
+  labs(x = "Years of Education", y = "Republican", color = "Gender")
+```
+
+<br>
+
+Among men, family wealthy is positively associated with both political conservatism and support for Republican Party membership; among women, family income has a positive linear association with Republican Party ID, but a nonlinear relationship with political conservatism (Figures 9a and 9b). This suggests that the lack of alignment between political ideology and party ID may be more common among women than among men. I investigate this issue further using FE linear models in a subsequent section. 
+
+The link between subjective class identity and the DVs is very interesting. Class identity appears to have a weak negative association with political conservatism and a nonlinear relationship with Republican Party ID (Figures 10a and 10b). That is, on average, respondents who self-identify as working class are more somewhat more conservative than those who self-identify as upper class. While initially surprising, it might be because Americans who are highly class conscious are also more likely to be ideologically liberal. That is, upper-middle class conservatives are more likely to self-identify as "middle class" than their similarly situated counterparts who are more liberal. This working hypothesis is also supported by Figures 9a and 9b: family income generally has a positive association with political conservatism and support for the Republican Party. 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Plot 9a: rel. between family income and conservative ideology
+complete_gss_df %>%
+  ggplot(aes(x = ln_famincome, y = conserv_ideol, color = gender_text)) + 
+  geom_jitter(alpha = .4) +
+  geom_smooth(color = "black") +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 9a: Ln(Family Income) and Conservative Ideology") +
+  labs(x = "Ln(Family Income)", y = "Conservative Ideology", color = "Gender")
+
+# Plot 9b: rel. between family income and republican party ID
+complete_gss_df %>%
+  ggplot(aes(x = ln_famincome, y = repub_partyid, color = gender_text)) + 
+  geom_jitter(alpha = .4) +
+  geom_smooth(color = "black") +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 9b: Ln(Family Income) and Republican Party ID") +
+  labs(x = "Ln(Family Income)", y = "Republican Party ID", color = "Gender")
+
+# Plot 10a: rel. between class identity and political ideology
+complete_gss_df %>%
+  ggplot(aes(x = class_text, y = conserv_ideol, color = gender_text)) + 
+  geom_boxplot() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 10a: Class Identity and Conservative Ideology") +
+  labs(x = "Subjective Class Identity", y = "Conservative Ideology", color = "Gender")
+
+# Plot 10b: rel. between class identity and republican party ID
+complete_gss_df %>%
+  ggplot(aes(x = class_text, y = repub_partyid, color = gender_text)) + 
+  geom_boxplot() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 10b: Class Identity and Republican Party ID") +
+  labs(x = "Subjective Class Identity", y = "Republican Party ID", color = "Gender")
+```
+
+<br>
+
+## Part 3a: Exploring Changes Over Time in Political Conservatism (DV 1)
+
+In this section, I look at how the values of the two dependent variables change over time. This is important because if there is not enough within-unit variation in the values of the DVs across the waves, then the FE linear models won't be able to detect the effects of the predictors -- even if they really do exist. In Figure 11 below, I display changes in the values of conservative ideology over time. Please note: each line represents the trajectory or trend for each subject. The figure clearly shows that movement is taking place for this variable, and that it's happening in many different directions among both men and women. However, the weakness of this plot is that it doesn't do a good job of showing more than that. For example, it doesn't tell us the relative proportion of subjects who became more/less conservative -- and by how much. 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Plot change over time in conservative ideology
+complete_gss_df %>% 
+  ggplot(aes(x = wave_fct, y = conserv_ideol, group = subject.ID, color = gender_text)) +
+  geom_line(alpha = .5) +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 11: Change Over Time: Conservative Ideology") +
+  labs(x = "Wave", y = "Conservative Ideology", color = "Gender") 
+```
+
+<br>
+
+To address this problem, I wrote some code that computes the changes (or lack the lack thereof) in the values of conservative ideology for each subject across the three waves. Then, I present the data in two sets of histograms. The first set (Figure 12a) provides a distribution of the changes in conservative ideology between waves 1 and 2 for men and women; and the second set (Figure 12b) provides a similar distribution for changes between waves 2 and 3. The figures are insightful: among men and women, about half of the subjects did not change their views between the waves (there are two years in between each wave). Moreover, the changes are normally distributed, which suggests that people were just as likely to become more conservative as they were to become more liberal. 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# First, look at change over time for polviews
+polviews_w1 <- complete_gss_df %>%
+  filter(wave == 1) %>%
+  select(subject.ID, polviews, gender_text) %>%
+  arrange(subject.ID)
+
+polviews_w2 <- complete_gss_df %>%
+  filter(wave == 2) %>%
+  select(subject.ID, polviews, gender_text) %>%
+  arrange(subject.ID)
+
+polviews_w3 <- complete_gss_df %>%
+  filter(wave == 3) %>%
+  select(subject.ID, polviews, gender_text) %>%
+  arrange(subject.ID)
+
+# Change in polviews from w1 to w2 
+polviews_w1_to_w2 <- polviews_w2 %>%
+  mutate(polviews_change = polviews_w2$polviews - polviews_w1$polviews) %>%
+  select(subject.ID, polviews_change, gender_text)
+
+# Change in polviews from w2 to w3 
+polviews_w2_to_w3 <- polviews_w3 %>%
+  mutate(polviews_change = polviews_w3$polviews - polviews_w2$polviews) %>%
+  select(subject.ID, polviews_change, gender_text)
+
+# Histogram of the changes in polviews from w1 to w2 
+polviews_w1_to_w2 %>%
+  ggplot(aes(x = polviews_change, y = ..density.., fill = gender_text)) +
+  geom_histogram() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 12a: Change Over Time (W1 to W2): Conservative Ideology") +
+  labs(x = "Change in Conservative Ideology (W1 to W2)", y = "Density", fill = "Gender") 
+
+# Histogram of the changes in polviews from w2 to w3
+polviews_w2_to_w3 %>%
+  ggplot(aes(x = polviews_change, y = ..density.., fill = gender_text)) +
+  geom_histogram() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 12b: Change Over Time (W2 to W3): Conservative Ideology") +
+  labs(x = "Change in Conservative Ideology (W2 to W3)", y = "Density", fill = "Gender") 
+```
+
+<br>
+
+## Part 3b: Exploring Changes Over Time in Republican Party ID (DV 2)
+
+Next, I also examine changes in Republican Party ID within the subjects across the three waves. The results as shown in Figures 13a and 13b largely mirror those of the first DV: i.e., between waves 1 and 2 and waves 2 and 3, about half of the subjects changed their level of support for the Republican Party. The changes appear to be roughly normally distributed and there does not appear to be any strong gender differences. 
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# First, look at change over time for partyid
+partyid_w1 <- complete_gss_df %>%
+  filter(wave == 1) %>%
+  select(subject.ID, partyid, gender_text) %>%
+  arrange(subject.ID)
+
+partyid_w2 <- complete_gss_df %>%
+  filter(wave == 2) %>%
+  select(subject.ID, partyid, gender_text) %>%
+  arrange(subject.ID)
+
+partyid_w3 <- complete_gss_df %>%
+  filter(wave == 3) %>%
+  select(subject.ID, partyid, gender_text) %>%
+  arrange(subject.ID)
+
+# Change in partyid from w1 to w2 
+partyid_w1_to_w2 <- partyid_w2 %>%
+  mutate(partyid_change = partyid_w2$partyid - partyid_w1$partyid) %>%
+  select(subject.ID, partyid_change, gender_text)
+
+# Change in partyid from w2 to w3 
+partyid_w2_to_w3 <- partyid_w3 %>%
+  mutate(partyid_change = partyid_w3$partyid - partyid_w2$partyid) %>%
+  select(subject.ID, partyid_change, gender_text)
+
+# Histogram of the changes in partyid from w1 to w2 
+partyid_w1_to_w2 %>%
+  ggplot(aes(x = partyid_change, y = ..density.., fill = gender_text)) +
+  geom_histogram() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 13a: Change Over Time (W1 to W2): Repub. Party ID") +
+  labs(x = "Change in Republican Party ID (W1 to W2)", y = "Density", fill = "Gender") 
+
+# Histogram of the changes in partyid from w2 to w3
+partyid_w2_to_w3 %>%
+  ggplot(aes(x = partyid_change, y = ..density.., fill = gender_text)) +
+  geom_histogram() +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 13b: Change Over Time (W2 to W3): Repub. Party ID") +
+  labs(x = "Change in Republican Party ID (W2 to W3)", y = "Density", fill = "Gender") 
+```
+
+<br>
+
+## Part 4a: Modeling Changes in Conservative Ideology Over Time (DV 1)
+
+In Part 4, I model changes in the two DV over time by using linear FE models. I use the `plm()` function implemented in the package `plm`. I run three sets of models for each DV. The model specifications are the same across all three models. The main difference is that model 1 uses the full dataset, model 2 only uses the sample of men, and model 3 only uses the sample of women. This is to see whether the link between the predictors and the DVs are shaped by gender. In theory, of course I could have included gender directly in the models and allowed it to interact with the other variables. I do not do this for two reasons: first, as mentioned earlier, the FE models automatically drop time-invariant variables such as gender (in the GSS dataset, gender is treated as time-invariant); second, it is computationally inefficient to allow gender to interact with many different predictors. The results of such a model (i.e., its coefficients) would be very difficult to interpret. 
+
+For each model, I use the following predictors: divorced (1 for yes, 0 otherwise); no religion (1 for yes, 0 otherwise); years of education (continuous variable); logged family income (continous variable); lower class ID (1 if either "Working" or "Lower", 0 otherwise); and unemployed (1 for yes, 0 otherwise). 
+
+According to the results of the three FE models below, none of the predictors cleared the conventional threshold for statistical significance (p<.05). This may indicate that none of the regressors are reliable predictors of political conservatism; it could also indicate that there wasn't enough within-unit variance (or statistical power) to detect real relationships that exist. The second point is plausible, given that we're looking at changes within individuals over only three waves or periods of data collection. 
+
+<br>
+
+```{r}
+# conserv_ideol mod1: full dataset
+conserv_mod1 <-plm(conserv_ideol ~ divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = complete_gss_df, index=c("subject.ID", "wave"), model="within")
+conserv_mod1 %>%
+  summary()
+
+# conserv_ideol mod2: only men
+conserv_mod2 <-plm(conserv_ideol ~ divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = only_men, index=c("subject.ID", "wave"), model="within")
+conserv_mod2 %>%
+  summary()
+
+# conserv_ideol mod3: only women
+conserv_mod3 <-plm(conserv_ideol ~ divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = only_women, index=c("subject.ID", "wave"), model="within")
+conserv_mod3 %>%
+  summary()
+```
+
+<br>
+
+## Part 4b: Modeling Changes in Republican Party ID Over Time (DV 2)
+
+Next, I repeat the FE analysis for the second DV: Republican Party ID. Again, the model 1 uses the full sample; model 2 only uses the sample of men; and model 3 only uses the sample of women. According to model 1, conservative ideology and no religion are statistically significant predictors of stronger Republican Party ID. While the effect of conservative ideology is very significant in a statistical sense (i.e., it's p-value), the effect in a substative sense is actually arguably quite small. That is, a 1-point increase in political conservatism (out of a 7-point scale) is expected to increase an individual's support for the Republican Party by 0.1 points out of a 7-point scale. 
+
+Are there gender differences? Models 2 and 3 suggest that there are: for the sample of men, unemployment also has a statistically and substantively significant effect on support for the Republican Party. Moving from non-unemployed (e.g., having a full-time or part-time job) to unemployed is expected to yield a decrease of 0.63 points in the Republican Party ID scale. This is substantively significant when we consider that the average level of support for Republicans among men is 3.9. Among women, conservative ideology is also a statistically significant predictor of support for the Republican Party, although the effect is smaller than among men (coefficients of 0.085 and 0.122, respectively). 
+
+Moreover, while having no religion reduces support for the Republican Party among men, it does not have that effect among women. Empirically, we see another reason why it's often important to disaggregate the results by gender: in the full sample, no religion had a positive statistically significant effect on Republican Party ID, but the coefficient or effect was -0.19. However, we see that this marginal effect was driven almost entirely by changes in the sample of men: the coefficient for men is -0.45 (and statistically significant) among men but there is basically a null effect among women. 
+
+<br>
+
+```{r}
+# repub_partyid mod1: full dataset
+repub_mod1 <-plm(repub_partyid ~ conserv_ideol + divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = complete_gss_df, index=c("subject.ID", "wave"), model="within")
+repub_mod1 %>%
+  summary()
+
+# repub_partyid mod2: only men
+repub_mod2 <-plm(repub_partyid ~ conserv_ideol + divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = only_men, index=c("subject.ID", "wave"), model="within")
+repub_mod2 %>%
+  summary()
+
+# repub_partyid mod3: only women
+repub_mod3 <-plm(repub_partyid ~ conserv_ideol + divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = only_women, index=c("subject.ID", "wave"), model="within")
+repub_mod3 %>%
+  summary()
+```
+
+<br>
+
+## Part 5: Assessing Model Fit
+
+In this final section, I want to assess model fit. Since only the results of the models for the 2nd DV were statistically significant, I'll just focus on those models (i.e., which predict Republican Party ID). First, I'll focus on model 1, which uses the full sample. I first save the residuals and plot the distribution with respect to (wrt) to conservative ideology (Figure 14a); I also repeat this analysis but segment by gender (Figure 14b). I plot the residuals in relation to conservative ideology because the latter appears to be the most consistent predictor of Republican Party ID. 
+
+It appears as though the residuals are distributed in a roughly random manner. The one exception is that the residuals are greater when conservative ideology is 4/7 points (or "Moderate"). Intuitively, this makes sense. Among ideological moderates, almost by definition we would expect the link between political ideology and partisanship to be weaker. Thus, the residuals will be greater. Overall, there is relatively little evidence of heteroskedasticity, which is good. This seems to be true across for model 1 when it comes to men and women.
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Save the residuals for mod1
+repub_mod1_check <- complete_gss_df %>%
+  mutate(repub_mod1_resid = residuals(repub_mod1))
+
+# Add the predicted (i.e., fitted) values 
+repub_mod1_check <- repub_mod1_check %>%
+  mutate(pred_values = repub_partyid - repub_mod1_resid)
+
+# Plot the residuals wrt ideology, which is the primary predictor of interest
+repub_mod1_check %>%
+  ggplot(aes(x = conserv_ideol, y = repub_mod1_resid)) + 
+  geom_jitter(alpha = .4) +
+  geom_ref_line(h = 0) +
+  ggtitle("Figure 14a: Model 1 Residuals") +
+  labs(x = "Conservative Ideology", y = "Residuals")
+
+# Plot the residuals wrt ideology, which is the primary predictor of interest (by gender)
+repub_mod1_check %>%
+  ggplot(aes(x = conserv_ideol, y = repub_mod1_resid, color = gender_text)) + 
+  geom_jitter(alpha = .4) +
+  geom_ref_line(h = 0) +
+  facet_wrap(~ gender_text) +
+  ggtitle("Figure 14b: Model 1 Residuals") +
+  labs(x = "Conservative Ideology", y = "Residuals", color = "Gender")
+```
+
+<br>
+
+Next, I want to compare the actual values of the DV with the predicted values generated by model 1. I do this in two ways. First, I compare the distribution of actual values for the DV for each value of conservative ideology (i.e., I treat conservative ideology as a factor) -- with the values of the DV predicted by model 1. In Figure 15a, the actual values are from the full sample, which were used to generate the predictions. 
+
+In Figure 15b, I plot the predicted values of the DV from model 1 but also compare them to actual values from men and women. What we can see is that while model 1 (full sample) did a reasonably good job of using conservative ideology to predict Republican Party ID at the aggregate level, it did not do a good job among women. This suggests that the link between conservative ideology and Republican Party ID is shaped by gender, and researchers should either explicitly account for this in the models (e.g., by including an interaction term) or by running separate regressions on samples of men and women (which is what I've done).
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Plot predicted values v. actuals (using boxplots)
+grid_mod1 <- repub_mod1_check %>% 
+  group_by(conserv_ideol) %>%
+  summarize(avg_pred_DV = mean(pred_values))
+
+repub_mod1_check %>%
+  ggplot(aes(x = as.factor(conserv_ideol), y = repub_partyid)) + 
+  geom_boxplot() +
+  geom_point(aes(y = avg_pred_DV), data = grid_mod1, color = "purple", size = 3) +   
+  ggtitle("Figure 15a: Model 1 (All) Predicted v. Actual") +
+  labs(x = "Conservative Ideology", y = "Republican Party ID")
+
+# predicted v. actuals (using boxplots) - segment by gender
+repub_mod1_check %>%
+  ggplot(aes(x = as.factor(conserv_ideol), y = repub_partyid, color = gender_text)) + 
+  geom_boxplot() +
+  facet_wrap(~ gender_text) +
+  geom_point(aes(y = avg_pred_DV), data = grid_mod1, color = "purple", size = 3) +   
+  ggtitle("Figure 15b: Model 1 (All) Predicted v. Actual") +
+  labs(x = "Conservative Ideology", y = "Republican Party ID", color = "Gender")
+```
+
+<br>
+
+To demonstrate that my preferred modeling strategy produces better predictions, I will use Figures 16a and 16b below. Figure 16a compares the predicted values of Republican Party ID generated from model 2 (which was only run on the sample of men) and the actual values of Republican Party ID among men. Both the predicted and actual values of the DV are in relation to conservative ideology; again, this is because this is the most consistent predictor of the DV as identified during the previous FE modeling stage. Figure 16b repeats this analysis but using the predicted values of Republican Party ID generated from model 3 (which only used data from the sample of women) and the actual values of of Republican Party ID among women. Please note that the models run on single-gender samples provide more reliable predictions. The improvements are particularly noticeable among women (e.g., compare Figures 15b and Figures 16b).
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Save the residuals for mod2
+repub_mod2_check <- only_men %>%
+  mutate(repub_mod2_resid = residuals(repub_mod2))
+
+# Add the predicted (i.e., fitted) values 
+repub_mod2_check <- repub_mod2_check %>%
+  mutate(pred_values = repub_partyid - repub_mod2_resid)
+
+# Plot predicted values v. actuals (using boxplots)
+grid_mod2 <- repub_mod2_check %>% 
+  group_by(conserv_ideol) %>%
+  summarize(avg_pred_DV = mean(pred_values))
+
+repub_mod2_check %>%
+  ggplot(aes(x = as.factor(conserv_ideol), y = repub_partyid)) + 
+  geom_boxplot() +
+  geom_point(aes(y = avg_pred_DV), data = grid_mod2, color = "purple", size = 3) +   
+  ggtitle("Figure 16a: Model 2 (Men Only) Predicted v. Actual") +
+  labs(x = "Conservative Ideology", y = "Republican Party ID")
+
+# Save the residuals for mod3
+repub_mod3_check <- only_women %>%
+  mutate(repub_mod3_resid = residuals(repub_mod3))
+
+# Add the predicted (i.e., fitted) values 
+repub_mod3_check <- repub_mod3_check %>%
+  mutate(pred_values = repub_partyid - repub_mod3_resid)
+
+# Plot predicted values v. actuals (using boxplots)
+grid_mod3 <- repub_mod3_check %>% 
+  group_by(conserv_ideol) %>%
+  summarize(avg_pred_DV = mean(pred_values))
+
+repub_mod3_check %>%
+  ggplot(aes(x = as.factor(conserv_ideol), y = repub_partyid)) + 
+  geom_boxplot() +
+  geom_point(aes(y = avg_pred_DV), data = grid_mod3, color = "purple", size = 3) +   
+  ggtitle("Figure 16b: Model 3 (Women Only) Predicted v. Actual") +
+  labs(x = "Conservative Ideology", y = "Republican Party ID")
+```
+
+

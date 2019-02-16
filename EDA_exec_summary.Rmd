@@ -1,0 +1,83 @@
+---
+title: "EDA_exec_summary"
+author: "John Lee"
+date: "December 9, 2018"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Executive Summary
+
+**My research questions are the following:** 
+1. What predicts changes in political ideology (political conservatism) over time?
+2. What predicts changes in party ID (Republican party ID) over time?
+3. How does gender shape the effects of the factors?
+
+Overall, I have several key findings. First, regarding research question (RQ) #1: according to the results of the three FE models below, none of the predictors cleared the conventional threshold for statistical significance (p<.05). This may indicate that none of the regressors are reliable predictors of political conservatism; it could also indicate that there wasn't enough within-unit variance (or statistical power) to detect real relationships that exist. The second point is plausible, given that we're looking at changes within individuals over only three waves or periods of data collection. 
+
+Second, regarding regarding RQ #2: conservative ideology and no religion are statistically significant predictors of stronger Republican Party ID. While the effect of conservative ideology is very significant in a statistical sense (i.e., it's p-value), the effect in a substative sense is actually arguably quite small. That is, a 1-point increase in political conservatism (out of a 7-point scale) is expected to increase an individual's support for the Republican Party by 0.1 points out of a 7-point scale. 
+
+Finally, and arguably most importantly, I found that gender shapes the nature of the link between predictors and support for the Republican Party. For example, although unemployment does not appear to increase or decrease support for Republicans among women, for the sample of men, unemployment has a statistically and substantively significant effect on support for the Republican Party. Moving from non-unemployed (e.g., having a full-time or part-time job) to unemployed is expected to yield a decrease of 0.63 points in the Republican Party ID scale. This is substantively significant when we consider that the average level of support for Republicans among men is 3.9. Among women, conservative ideology is also a statistically significant predictor of support for the Republican Party, although the effect is smaller than among men (coefficients of 0.085 and 0.122, respectively). 
+
+Moreover, while having no religion reduces support for the Republican Party among men, it does not have that effect among women. Empirically, we see another reason why it's often important to disaggregate the results by gender: in the full sample, no religion had a positive statistically significant effect on Republican Party ID, but the coefficient or effect was -0.19. However, we see that this marginal effect was driven almost entirely by changes in the sample of men: the coefficient for men is -0.45 (and statistically significant) among men but there is basically a null effect among women. 
+
+To illustrate, I close by examining the link between political conservatism and Republican Party ID. According to the analysis, a conservative ideology is the most consistent predictor of support for the Republican Party. However, a model that is run on the full sample will generate predictions about the effects of political conservatism that are quite inaccurate for women. In Figure 1 below, the purple points represent the values of the DV predicted by model 1, which uses the full sample. The boxplots in red and blue represent the distributions of actual values of the DV for men and women, respectively. For a more expansive discussion of this, please see my long-form EDA.
+
+<br>
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+# Load packages
+library(tidyverse)
+library(forcats)
+library(modelr)
+library(haven)
+library(plm)
+
+complete_gss_df <- readRDS("data/processed/complete_gss.rds")
+
+# Create subsets of the data - one for men, one for women. This will be used during the modeling process
+only_men <- complete_gss_df %>%
+  filter(sex == 1)
+
+only_women <- complete_gss_df %>%
+  filter(sex == 2)
+
+# repub_partyid mod1: full dataset
+repub_mod1 <-plm(repub_partyid ~ conserv_ideol + divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = complete_gss_df, index=c("subject.ID", "wave"), model="within")
+
+# repub_partyid mod2: only men
+repub_mod2 <-plm(repub_partyid ~ conserv_ideol + divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = only_men, index=c("subject.ID", "wave"), model="within")
+
+# repub_partyid mod3: only women
+repub_mod3 <-plm(repub_partyid ~ conserv_ideol + divorced + no_religion + educ + ln_famincome + lower_classid + unempl + wave, data = only_women, index=c("subject.ID", "wave"), model="within")
+
+# Save the residuals for mod1
+repub_mod1_check <- complete_gss_df %>%
+  mutate(repub_mod1_resid = residuals(repub_mod1))
+
+# Add the predicted (i.e., fitted) values 
+repub_mod1_check <- repub_mod1_check %>%
+  mutate(pred_values = repub_partyid - repub_mod1_resid)
+
+# Plot predicted values v. actuals (using boxplots)
+grid_mod1 <- repub_mod1_check %>% 
+  group_by(conserv_ideol) %>%
+  summarize(avg_pred_DV = mean(pred_values))
+
+# predicted v. actuals (using boxplots) - segment by gender
+repub_mod1_check %>%
+  ggplot(aes(x = as.factor(conserv_ideol), y = repub_partyid, color = gender_text)) + 
+  geom_boxplot() +
+  facet_wrap(~ gender_text) +
+  geom_point(aes(y = avg_pred_DV), data = grid_mod1, color = "purple", size = 3) +   
+  ggtitle("Figure 1: Model 1 (All) Predicted v. Actual") +
+  labs(x = "Conservative Ideology", y = "Republican Party ID", color = "Gender")
+```
+
+
+
